@@ -115,7 +115,7 @@ they'll need to convince the FxA admins that requests from an origin of
 ``lockbox-plus.com`` deserves access to the same data that the original app
 was using. Admins must be in a position to evaluate these claims.
 
-### app_origin checks are not meaningful in non-web applications
+### app_origin checks are less meaningful in non-web applications
 
 The "identity" of an application is fuzzy. For web-based applications, we use
 the web origin (DNS zone) of the server from which the page was fetched. When
@@ -135,24 +135,62 @@ PKCE ensures that the application which requested an OAuth2 grant will be the
 one that receives the resulting tokens. However it doesn't help bind the
 mobile application to the scoped-key ``client_id`` or ``app_origin``.
 Malicious Android/iOS apps can copy the ``client_id`` out of a legitimate
-app, register the same local URL scheme (from ``redirect_uri``), then launch
-a FxA login page that is identical to the "real" one. The resulting token and
-key bundle might get returned to the malicious app instead of the legitimate
-one, depending upon which app winds up first in the operating system's
-dispatch table.
+app, register the same local URL scheme (from ``redirect_uri``), generate a
+PKCE preimage, then launch a FxA login page in the same way as the "real" app
+would have. When the login page redirects back to the requesting app, the
+malicious app might get control instead of the real one (depending upon which
+app winds up first in the operating system's dispatch table). It can then use
+teh PKCE preimage to fetch the token and key bundle.
 
-I'm not immediately aware of any mechanism that could fix this. While iOS
-might hide the contents of an installed binary (are .ipa files encrypted?),
-it is generally not recommended to rely upon this to hide secrets inside the
-executable. The operating system would need to provide some kind of signed
-attestation API, to allow each application to get a token signed by the OS,
-and the OS can claim that the requesting application was signed by some
-particular developer key.
+The only thing that binds the authorization server's notion of ``client_id``
+to the actual application is the ``redirect_uri``, and the fact that DNS and
+the CA/PKI system limit which servers can speak for certain domains.
 
-Without a mechanism like this, I don't think it's safe to have mobile
-applications share access to the same data as a web-based one.
+There are three approaches to fix this, all of which require support from the
+mobile operating system. The first is to embed secrets in the application
+(i.e. the OAuth2 ``client_secret``). This is not recommended, because Android
+.apk files are not encrypted (allowing the secrets to be extracted from the
+installer bundle), and even encrypted iOS .ipa files are decrypted during the
+installation process (so secrets can be extracted on a jailbroken phone).
 
+The second approach would require the OS to provide some kind of signed
+attestation API: your application submits a message to the OS, which signs a
+statement saying "this copy of iOS believes that this message was given to me
+by app XYZ", along with a statement from Apple that says "this copy of iOS is
+legitimate and unmodified", and another that says "when app XYZ submitted,
+the executable was signed, and the signature can be verified by public key
+ABC".
 
+This would bind the signed message to the public key ABC, and would serve a
+similar role to the validated origin of a web page. However it would require
+a new API in the mobile OS, and it would be vulnerable to jailbreaks and OS
+bugs. Worse, a failure in any *one* device would allow that device to produce
+messages that could be exploited on any other machine (a "class break").
+
+The third approach, which is actually feasible, is to rely upon an OS feature
+that binds an application to a web domain. rfkelly pointed at two pages:
+
+* https://developer.apple.com/library/content/documentation/General/Conceptual/AppSearch/UniversalLinks.html#//apple_ref/doc/uid/TP40016308-CH12-SW1
+* https://developer.android.com/training/app-links/index.html
+
+Both of these mechanisms control the way that URLs are opened on iOS and
+Android, and specifically allow an installed app to take over URLs within a
+given domain if-and-only-iff there is a ``.well-known/`` file on that domain
+which matches the app requesting ownership (both platforms effectively embed
+the app's public verifying key into the .well-known file).
+https://tools.ietf.org/html/draft-ietf-oauth-native-apps-12 discusses the
+security properties of these features in an OAuth2 context.
+
+The specific concern is whether the same encryption key should be given to
+both a native app (claiming association with some particular domain name),
+and a web app (which was served from that same domain name).
+
+The recommendation is Scoped Keys application registrations should be
+rejected unless the ``redirect_uri`` points at an ``https:`` scheme. Mobile
+apps which wish to participate must use the Universal Links (iOS) or Android
+App Links feature to claim control over the domain used in the redirect
+mechanism. Even if non-HTTP URL schemes are provided on the platform, they
+are not sufficient to serve as secure application identifiers.
 
 ### Key-ID derivation
 
@@ -197,6 +235,20 @@ HKDF-SHA256(kS, size=16, salt=scoped_key_salt, context=
 "identity.mozilla.com/picl/v1/scoped_kid\n" +
 scoped_key_identifier)
 ```
+
+Some concerns were raised that deriving a value from ``kS`` might reveal some
+information about ``kS``. https://tools.ietf.org/html/rfc7638#section-7
+mentions this, recommending that the "JWK Thumbprint" should only be revealed
+to parties that already ought to know the key itself (and merely need help
+remembering which of their many keys this particular message is using).
+
+I'll argue that:
+
+1: this is only a concern if the derivation function is weak, or if the input key space is small
+2: SHA-256, as a cryptographic hash function, is defined to be strong enough for this purpose
+3: the input keyspace is a full 256 bits (the length of ``kB``, which is derived by hashing from several 256-bit random values)
+4: even if HKDF failed somehow, it is better to reveal ``kS`` than ``kB``, because revealing ``kB`` could be used to recover ``kS`` anyways
+
 
 
 ### Test Vectors should be added
@@ -255,15 +307,50 @@ applications. The Scoped Keys project seeks to manage secrets, but wants to
 avoid depending upon the OAuth2 "secret mode", meaning that none of the
 OAuth2 interactions are expected to use the ``client_secret`` field.
 
+In my thinking, this is ok, as long as ``redirect_uri`` is restricted by the
+Authorization Server to pre-registered values, and as long as the platform
+ensures that the program (web page or native app) which receives that
+redirection is approved by the DNS/CA domain which the URI refers to.
+
+(verify this) In the early days of OAuth2, clients submitted
+``client_secret`` with their code-to-token request, to demonstrate their
+right to use the brand which the Authorization Server displayed to the user a
+moment earlier. This server bound the secret with the application's name,
+logo, and whatever research the server admin had done about the application's
+reputation before they approved the registration.
+
+But secrets are only valuable if they can be kept, and single-page web apps
+(delivered by a static host) cannot keep secrets. So ``client_secret`` was no
+use in those environments.
+
+However, those applications *do* have a secret: the TLS private key, which
+lives in the hosting server, and is only used to sign the TLS handshake. This
+secret is identified by name (the domain name), via the PKI certificate
+chain. So when the Authorization Server enforces a fixed ``redirect_uri`` for
+a given application, it's really identifying a secret which is only known to
+the TLS server, and browsers can tell when a server knows this secret (by
+using HTTPS and checking the certificate, as usual). So ``redirect_uri``
+serves a similar purpose to ``client_secret``, but it is expressed through
+TLS rather than by just including the secret in some POST arguments.
+
+
 ``client_secret`` exists to bind the access-token request (the POST that
 includes the authorization code, the redirect_uri, and the
 ``client_id``/``client_secret``) to the target application (the party who
 originally registered the application with the Authorization Server).
 
 Without a ``client_secret``, anybody can turn a valid code into a valid
-token, not just the backend server of the authorized application. To get a
-valid code, an HTTP client that is not constrained by a browser (i.e.
-``curl``) just does a GET
+token, not just the backend server of the authorized application.
+
+To get a valid code, you just do a GET to the Authorization Server, and read
+the code out of the redirect response that comes back. Browser-based apps
+from other domains might not be able to see the response (it depends upon how
+CORS is configured on the Authorization Server), but any HTTP client that is
+not constrained by a browser (i.e. ``curl``) can do this trivially. So the
+only thing that prevents strangers from using the reputation of ``client_id``
+is the secrecy of ``client_secret``.
+
+PKCE
 
 ...
 
