@@ -192,6 +192,59 @@ App Links feature to claim control over the domain used in the redirect
 mechanism. Even if non-HTTP URL schemes are provided on the platform, they
 are not sufficient to serve as secure application identifiers.
 
+### scoped_key_salt needs to be secret, isn't exactly a salt
+
+Key rotation divides time into distinct "rotation intervals", separated by
+revocation events. `scoped_key_salt` is combined with the user's master `kB`
+to derive each per-scope per-interval encryption key. To keep these intervals
+separate (having access in one interval should not grant access in a
+different interval), `scoped_key_salt` must be kept secret against
+previously- and eventually- valid users: only a client which demonstrates
+control over the account in the *current* interval should be able to learn
+the current `scoped_key_salt` value.
+
+This should probably be renamed to emphasize this property. Salts are usually
+simple diversifiers to prevent bulk guessing attacks. In some systems, they
+are revealed publically (one account at a time, to each client claiming to
+control that account, so the client can combine their password with the salt,
+sending the result to the server). In others, they are kept secret, but could
+be safe to reveal as long as some second value is kept secret (e.g. in onepw,
+`authSalt` could be revealed as long as `verifyHash` is kept secret, but
+knowing both would allow a slow-speed brute-force attack against the
+password).
+
+In this case, the secrecy requirements are tied to the rotation intervals. We
+rely upon the FxA server to correctly forget the old value when rotation
+occurs, and to pick new ones randomly (to prevent prediction of future
+values).
+
+Perhaps this should be named `scoped_epoch_access_key`? The name should
+indicate that this value is both tied to a particular scope (e.g. notes vs
+Sync), and tied to a particular rotation interval. It should also emphasize
+the fact that this is a secret key, or at least part of one.
+
+This might require refactoring the terminology of other values to make the
+notation consistent. E.g. `scoped_key_timestamp` might become
+`scoped_epoch_beginning_timestamp`.
+
+In addition, it might be more correct to feed this value into the IKM (aka
+"password") input of HKDF, rather than the salt input:
+
+```
+kS = HKDF-SHA256(kB + scoped_epoch_access_key, salt="",
+                 context="identity.mozilla.com/picl/v1/scoped_key\n" +
+                 scoped_key_identifier)
+```
+
+The differences between IKM, salt, and context are subtle (but not large, in
+practical terms: they all get hashed together eventually). The HKDF paper
+describes "salt" as being something non-secret that is outside the attacker's
+control, and the "context" as a non-secret value that will be bound to the
+produced key material. HKDF promises that an attacker who knows lots of
+derived keys for other contexts can still not get the derived key for a new
+context. But I'm not sure if it promises this property for different salts.
+
+
 ### Key-ID derivation
 
 The key-id is derived from the master key using a related derivation string.
