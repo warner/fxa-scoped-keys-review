@@ -440,7 +440,26 @@ As the docs mention, the system might be vulnerable to side-channel attacks,
 most notably a timing attack on the public-key encryption/decryption steps,
 or token comparisons.
 
-(insert analysis here)
+This is unlikely to be very productive, given the relatively slow rate at
+which these operations can be provoked, and the single-use nature of most
+keys. If an attack were possible, it would most likely appear during the
+completion of the flow, where the client is computing the shared ECDH key and
+then decrypting the wrapped bundle. An attacker who could cause this function
+to be called many times might be able to deduce the shared key, and thus
+decrypt the bundle themselves.
+
+To discourage this, the client-side state should be single-use. In
+particular, the ``localStorage`` state should be cleared upon receipt of the
+first flow-completing redirect (``completeOAuthFlow()``, in the
+fxa-notes-example code). This will prevent the client from attempting the
+key-agreement process multiple times.
+
+The beginning of the flow (during which the ephemeral keypair is generated)
+is less likely to be exploitable. It is triggered by a local navigation
+event, which generally means a human clicking a link. And it generates a new
+keypair each time, so running it multiple times won't accumulate information
+that can be used to attack a specific instance.
+
 
 ## Bikeshedding
 
@@ -456,8 +475,30 @@ this is still protected by the public key.
 
 ## fxa-notes-example notes
 
+There are two unusual steps in the derivation of the final unwrapping key:
+
 * deriveECDSAESKey: since you're using HKDF everywhere else, use it here too,
-  instead of a hand-implemented version of Concat KDF
+  instead of a hand-implemented version of ConcatKDF
+* In fact, this doesn't need a KDF step. The ephemeral key is used for a
+  single purpose: protecting the contents of derivedKeyBundle from the server
+  that (briefly) holds it. If the WebCrypto ECDH function is fulfilling its
+  promise to provide a derived key suitable for the stated purpose (AES),
+  then the output of .deriveKey should be enough.
+
+Alas, both are required to be compatible with other implementations of the
+JOSE specification, which appear to mandate hash-based derivation from the
+ECDH shared secret. [RFC7518](https://tools.ietf.org/html/rfc7518#appendix-C)
+(the JWA spec), in section 4.6 and appendix C, describes the ConcatKDF
+algorithm to turn a shared "Z" bytestring into a key. This references
+[NIST SP-56A](http://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-56Ar2.pdf),
+where section 5.7.1.2 defines "Z" as being the raw X-coordinate of the shared
+point. JOSE is correct in requiring this X-coordinate to be hashed before
+use.
+
+What's puzzling is why a WebCrypto API named "deriveKey" that includes a
+parameter for the purpose of the key would not perform this hashing
+internally, since the raw Z value it apparently returns is not suitable for
+the stated purpose.
 
 ## Future ideas
 
