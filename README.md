@@ -500,6 +500,16 @@ parameter for the purpose of the key would not perform this hashing
 internally, since the raw Z value it apparently returns is not suitable for
 the stated purpose.
 
+Incidentally, the ``randomString()`` function is unclear as to whether the
+argument is the number of bytes of output, or the number of base64-characters
+in the output. It is implemented as the latter, but the use of "16" and "32"
+as inputs makes it seem like it might be the former. In addition, the line in
+``beginOAuthFlow()`` that does ``sha256(codeVerifier)``, where ``codeVerifier
+= randomString(32)``, mixes bytes and base64 characters in a confusing way. I
+think the effect here is neglible, but in general it's a better idea to
+clearly treat bytestrings and encoded bytestrings as distinct types: only
+hash bytes, and delay base64 encoding/decoding until the last moment.
+
 ## Future ideas
 
 Splitting scopes into read-write and read-only is great. This could be
