@@ -319,7 +319,12 @@ Consider putting non-ASCII names in these test vectors, where appropriate:
 * Is the account name included anywhere?
 * What happens when an internationalized domain name is used as an
   app-specific scope/origin?
-  
+
+In addition, URLs come in multiple forms (the value of ``document.location``,
+the characters typed into the URL bar, the bytes that appear in the HTTP
+request or the ``Location:`` response header), with escaping/conversion rules
+between them. The examples should make it clear which test vectors are in
+which forms.
 
 ### Limitations should be documented
 
@@ -372,9 +377,19 @@ moment earlier. This server bound the secret with the application's name,
 logo, and whatever research the server admin had done about the application's
 reputation before they approved the registration.
 
+To get a valid code, you just do a GET to the Authorization Server, and read
+the code out of the redirect response that comes back. Browser-based apps
+from other domains might not be able to see the response (it depends upon how
+CORS is configured on the Authorization Server), but any HTTP client that is
+not constrained by a browser (i.e. ``curl``) can do this trivially. So the
+only thing that prevents strangers from using the reputation of ``client_id``
+is the secrecy of ``client_secret``. Without a ``client_secret``, anybody can
+turn a valid code into a valid token, not just the backend server of the
+authorized application.
+
 But secrets are only valuable if they can be kept, and single-page web apps
-(delivered by a static host) cannot keep secrets. So ``client_secret`` was no
-use in those environments.
+(delivered by a static host) cannot keep secrets. So ``client_secret`` was of
+no use in those environments.
 
 However, those applications *do* have a secret: the TLS private key, which
 lives in the hosting server, and is only used to sign the TLS handshake. This
@@ -385,28 +400,6 @@ the TLS server, and browsers can tell when a server knows this secret (by
 using HTTPS and checking the certificate, as usual). So ``redirect_uri``
 serves a similar purpose to ``client_secret``, but it is expressed through
 TLS rather than by just including the secret in some POST arguments.
-
-
-``client_secret`` exists to bind the access-token request (the POST that
-includes the authorization code, the redirect_uri, and the
-``client_id``/``client_secret``) to the target application (the party who
-originally registered the application with the Authorization Server).
-
-Without a ``client_secret``, anybody can turn a valid code into a valid
-token, not just the backend server of the authorized application.
-
-To get a valid code, you just do a GET to the Authorization Server, and read
-the code out of the redirect response that comes back. Browser-based apps
-from other domains might not be able to see the response (it depends upon how
-CORS is configured on the Authorization Server), but any HTTP client that is
-not constrained by a browser (i.e. ``curl``) can do this trivially. So the
-only thing that prevents strangers from using the reputation of ``client_id``
-is the secrecy of ``client_secret``.
-
-PKCE
-
-...
-
 
 ### scope=one+two or scope=one&scope=two ?
 
@@ -514,7 +507,7 @@ hash bytes, and delay base64 encoding/decoding until the last moment.
 
 Splitting scopes into read-write and read-only is great. This could be
 strengthened by having writes be public-key signed by a key that is only
-available to writers. ...
+available to writers.
 
 The login process generates just one token, but multiple keys. The token is
 "valid" for a number of scopes, but each key is only associated with a single
